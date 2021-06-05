@@ -1,0 +1,232 @@
+---
+title: "NYPD-Shooting-Incidents"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Overview
+This paper provides an analysis of publicly available data on shootings in New York City from 2006 to 2020 provided by the New York City Police Department. The analysis was developed in conjunction with the course work for the 3rd week of the Data Science as a Field course delivered online via the University of Colorado Boulder on Coursera. 
+
+Coursework and associated materials can be accessed via  <https://www.coursera.org/learn/data-science-as-a-field/lecture/gBSD6/intro-to-r-markdown>.
+
+This document aims to provide the steps neccesary to repeat the findings through your own work.
+
+We will cover
+
+* The packages leveraged
+* An overview of the data we have gathered to conduct analysis
+* The process for cleaning and preparing the data
+* An analysis on if incident rates are improving or worsening over time
+* Analysis of murder rates
+* An analysis on demographic patterns in the data
+* Predicability of the shooting rates as an indicator of the murder rate
+* Key conclusions and 
+
+
+## External Libraries Leveraged
+
+* library(tidyverse)
+* library(lubridate)
+* library(magrittr)
+* library(readxl)
+* library(ggthemes)
+* library(sf)
+* library(tmap)
+* library(tinytex)
+* library(zoo)
+
+```{r load_libraries, message=FALSE}
+library(tidyverse)
+library(lubridate)
+library(magrittr)
+library(readxl)
+library(ggthemes)
+library(sf)
+library(tmap)
+library(tinytex)
+library(zoo)
+```
+
+## Data load 
+NYPD Shooting Incident data collated by the NYPD can be found via Data.gov
+
+<https://catalog.data.gov/dataset/nypd-shooting-incident-data-historic>
+
+```{r import_data, message=FALSE}
+# Sets the NYC Shooting Data CSV
+url_in <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+
+shooting_Data <- read_csv(url_in)
+
+```
+
+## Initial analysis for data cleansing
+```{r set_types, message=FALSE}
+summary(shooting_Data)
+```
+
+Based on our planned analysis and summary of the loaded data we will
+
+* Remove un-needed columns
+  * Incident_Key - we do not need the unique ids for the individual incidents as we are analyzing aggregate data
+  * Jurisdicition_Code - not needed for spatial, demographic, and murder rate analysis
+  * Occur_Time - we are not conducting a time based analysis on incidents
+  * Precinct - Data not leveraged
+  * Location_Desc - data not leveraged
+  * X_COORD_CD - data not leveraged
+  * Y_COORD_CD - data not leveraged
+  * Latitude - data not leveraged
+  * Longitude - data not leveraged
+  * Long_Lat - data not leveraged
+* Fix column data types
+  * OCCUR_DATE - from char to date
+* Filter out NA data as we are interested in data with perps and victims
+  * PERP_AGE_GROUP
+  * PERP_SEX
+  * PERP_RACE
+* Rename multiple columns for easier coding
+
+```{r filter_no_perp, message=FALSE}
+cleanWorkingData <- shooting_Data %>%
+  select(-c(INCIDENT_KEY, OCCUR_TIME, PRECINCT, JURISDICTION_CODE, LOCATION_DESC, X_COORD_CD, Y_COORD_CD, Latitude, Longitude,Lon_Lat )) %>%
+  mutate(occur_date = mdy(OCCUR_DATE)) %>%
+  filter(PERP_AGE_GROUP!='NA') %>%
+  filter(PERP_SEX!='NA') %>%
+  filter(PERP_RACE!='NA') %>%
+  mutate(perp_age_group = factor(PERP_AGE_GROUP)) %>%
+  mutate(perp_sex = factor(PERP_SEX)) %>%
+  mutate(perp_race = factor(PERP_RACE)) %>%
+  mutate(vic_age_group = factor(VIC_AGE_GROUP)) %>%
+  mutate(vic_sex = factor(VIC_SEX)) %>%
+  mutate(vic_race = factor(VIC_RACE)) %>%
+  mutate(vic_age_group = factor(VIC_AGE_GROUP)) %>%
+  mutate(boro = factor(BORO))  %>%
+  rename(murder_flag = 'STATISTICAL_MURDER_FLAG') 
+  
+cleanWorkingData <- cleanWorkingData %>%
+  select(-c(OCCUR_DATE, PERP_AGE_GROUP, PERP_SEX, PERP_RACE, VIC_AGE_GROUP, VIC_SEX, VIC_RACE, BORO))
+
+summary(cleanWorkingData)
+
+```
+
+## Incident Rate Analysis
+For this section we want to look at the incident rate over time both in aggregate and by individual burb. To do this we will begin with adding incident counts and grouping them by date. 
+
+```{r incident_rate_total, message=FALSE}
+incident_rate_over_time <- cleanWorkingData
+  
+graphable_incident_data <- incident_rate_over_time %>%
+  group_by(boro, occur_date) %>%
+  tally(name="incident_count") 
+
+new_graph <- graphable_incident_data %>%
+  filter(incident_count > 0) %>%
+  ggplot(aes(x = occur_date, y = incident_count)) +
+  geom_line(aes(color = "incident_count")) +
+  geom_point(aes(color = "incident_count")) +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90))+
+  labs(title = "Shooting incidents over time", y= NULL)
+
+new_graph
+
+```
+
+```{r incident_rate_boro, message=FALSE}
+incident_by_boro <- incident_rate_over_time  %>%
+  mutate(occur_year = year(occur_date)) %>%
+  group_by(occur_year, boro) %>%
+  summarise(incident_count = n()) %>%
+  select(boro, occur_year, incident_count)
+  ungroup
+
+
+ggplot(incident_by_boro, aes(occur_year, incident_count, colour = boro)) +
+  geom_line() 
+
+```
+
+
+
+### Incident Rate Conclusion
+
+Incident rates from 2006 to 2020 are declining both in aggregate as well as individually across boros. There is a strong correlation in terms of trend across boros over time. Each boro is showing a similar decline in violent crime with a perp and victim in general incident rates.
+
+Brooklyn has seen the sharpest decline in incident rates moving from the highest rate nearing 800 per year down to approximately 250 in 2020 briefly coming in under the Bronx in 2016.
+
+Each Boro shows a sharp increase in the number of incidents in 2020. Further analysis at this stage is not feasible.
+
+
+## Total analysis of murders as compared to incidents
+```{r sum_graph}
+total_incidents_rollup <- incident_rate_over_time %>%
+  mutate(occur_year = year(occur_date)) %>%
+  group_by(occur_year, boro) %>%
+  summarise(incident_count = n(), murders = sum(murder_flag == TRUE)) %>%
+  ungroup()
+  
+
+total_incidents_rollup$incident_to_date <-  cumsum(total_incidents_rollup$incident_count)
+total_incidents_rollup$murders_to_date <-  cumsum(total_incidents_rollup$murders)
+
+colors <-c("Deaths" = "red", "Shootings" = "orange")
+
+total_incident_graph <- total_incidents_rollup %>%
+  filter(incident_count > 0) %>%
+  ggplot(aes(x = occur_year)) +
+  geom_line(aes(y = incident_to_date, color="Shootings"), size = 1.5) + 
+  geom_line(aes(y = murders_to_date, color="Deaths"), linetype="twodash",size = 1.5) +
+  xlab("Time") +
+  ylab("Number occuring")
+
+total_incident_graph
+  
+```
+
+
+total_incident_graph
+
+## Incidents as a predicator of murder rates
+```{r model_data}
+mod <- lm(murders_to_date ~ incident_to_date, data = total_incidents_rollup)
+summary(mod)
+
+predictions <- total_incidents_rollup %>%
+  mutate(prediction = predict(mod))
+
+predictions
+
+predictions %>% ggplot() +
+  geom_point(aes(x = incident_to_date, y = murders_to_date ), color = "blue") +
+  geom_point(aes(x = incident_to_date, y = prediction ), color = "red")
+```
+
+
+### Conclusion
+While not a sizable cognative leap...shootings are indeed strong predictor of murders.
+
+
+
+## Demographic analysis
+```{r demo_date}
+summary(cleanWorkingData)
+
+```
+
+
+### Demographic conclusion
+The perps are dramatically african american males over time with the majority of the offender ages being 18-24. Incidents occurring are largelyt African American male ages 18-24 against african american males ages 18-24. 
+
+Males represent the materially significant count in terms of both perps and victims.
+
+Shooting rates continue to decline slowly in aggregate over time.
+
+Number of shootings is a very positive and intuitive corollary to the number of deaths that will occur.
+
+### Bias analysis
+There might be bias in the data in terms of the reporting of certain crimes based on demographics. Additionally it is important to consider the predominance of a particular ethnic or age group based on total population within a given boro. As an example if the general population of NYC is largely african american males ages 18-24 and24-44 then the statistical significance of the finding isnt relative. If on the other hand the population is blended or of an alternative background this information would be mark stark...in which case why is the number disproportionate?
+
